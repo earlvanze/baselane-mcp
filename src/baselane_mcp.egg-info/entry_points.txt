@@ -1,0 +1,2 @@
+[console_scripts]
+baselane-mcp = baselane_mcp.server:main
