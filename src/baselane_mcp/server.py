@@ -7,6 +7,7 @@ from pydantic import Field
 import subprocess
 import json
 import os
+import sys
 from pathlib import Path
 
 try:
@@ -17,8 +18,14 @@ except Exception as exc:
 else:
     _IMPORT_ERROR = None
 
-SCRIPTS_DIR = Path("/home/umbrel/.openclaw/workspace/scripts")
-CONFIG_DIR = Path(__file__).parent.parent / "config"
+SCRIPTS_DIR = Path(
+    os.environ.get(
+        "BASELANE_SCRIPTS_DIR",
+        str(Path(__file__).resolve().parent.parent.parent / "scripts"),
+    )
+)
+PYTHON_BIN = sys.executable if sys.platform == "win32" else "python3"
+NODE_BIN = "node"
 
 if FastMCP is not None:
     _P = {
@@ -57,9 +64,9 @@ if FastMCP is not None:
         include_pdfs: Annotated[bool, _F("include_pdfs")] = False,
         dry_run: Annotated[bool, _F("dry_run")] = True,
     ) -> dict[str, Any]:
-        """Export Baselane statements via CDP. Requires authenticated Brave browser session."""
+        """Export Baselane statements via CDP. Requires authenticated browser session."""
         cmd = [
-            "python3", str(SCRIPTS_DIR / "baselane_download_statements_cdp.js"),
+            NODE_BIN, str(SCRIPTS_DIR / "baselane_download_statements_cdp.js"),
         ]
         if property_address:
             cmd.extend(["--property", property_address])
@@ -81,7 +88,7 @@ if FastMCP is not None:
     ) -> dict[str, Any]:
         """Split mortgage payments across properties using automation script."""
         cmd = [
-            "python3", str(SCRIPTS_DIR / "baselane_mortgage_split_automation.py"),
+            PYTHON_BIN, str(SCRIPTS_DIR / "baselane_mortgage_split_automation.py"),
             "--property", property_address,
             "--type", split_type,
         ]
@@ -100,7 +107,7 @@ if FastMCP is not None:
         dry_run: Annotated[bool, _F("dry_run")] = True,
     ) -> dict[str, Any]:
         """Export general ledger from Baselane."""
-        cmd = ["python3", str(SCRIPTS_DIR / "baselane_export_ledger_cdp.py")]
+        cmd = [PYTHON_BIN, str(SCRIPTS_DIR / "baselane_export_ledger_cdp.py")]
         if entity_id:
             cmd.extend(["--entity", entity_id])
         if start_date:
@@ -122,7 +129,7 @@ if FastMCP is not None:
         dry_run: Annotated[bool, _F("dry_run")] = True,
     ) -> dict[str, Any]:
         """Batch split multiple transactions."""
-        cmd = ["python3", str(SCRIPTS_DIR / "baselane_batch_split.py")]
+        cmd = [PYTHON_BIN, str(SCRIPTS_DIR / "baselane_batch_split.py")]
         if start_date:
             cmd.extend(["--start", start_date])
         if end_date:
@@ -135,13 +142,63 @@ if FastMCP is not None:
     
     @mcp.tool()
     def get_auth_status() -> dict[str, Any]:
-        """Check Baselane authentication status via CDP."""
-        cmd = ["python3", str(SCRIPTS_DIR / "baselane_attached_login_and_tokens.py"), "--check"]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        """Check Baselane authentication status via CDP (browser session)."""
+        import urllib.request
+        import urllib.error
+
+        cdp_host = os.environ.get("BASELANE_CDP_HOST", "127.0.0.1")
+        cdp_port = os.environ.get("BASELANE_CDP_PORT", "9222")
+        base = f"http://{cdp_host}:{cdp_port}"
+
+        def _http_json(url: str, timeout: int = 3):
+            with urllib.request.urlopen(url, timeout=timeout) as r:
+                return json.loads(r.read().decode("utf-8"))
+
         try:
-            return json.loads(result.stdout) if result.stdout else {"status": "unknown", "error": result.stderr}
-        except json.JSONDecodeError:
-            return {"status": "error", "output": result.stdout, "error": result.stderr}
+            version = _http_json(f"{base}/json/version")
+        except Exception as exc:
+            return {"status": "error", "cdp_reachable": False, "error": str(exc)}
+
+        browser = version.get("Browser", "")
+
+        try:
+            targets = _http_json(f"{base}/json/list")
+        except Exception as exc:
+            return {"status": "error", "cdp_reachable": True, "browser": browser, "error": str(exc)}
+
+        pages = [
+            t for t in targets
+            if t.get("type") == "page" and "app.baselane.com" in (t.get("url") or "")
+        ]
+        if not pages:
+            return {
+                "status": "not_authenticated",
+                "cdp_reachable": True,
+                "browser": browser,
+                "reason": "no_baselane_tab",
+            }
+
+        page = pages[0]
+        url = page.get("url", "")
+        title = page.get("title", "")
+
+        if "/login" in url or "/signin" in url:
+            return {
+                "status": "not_authenticated",
+                "cdp_reachable": True,
+                "browser": browser,
+                "url": url,
+                "title": title,
+                "reason": "on_login_page",
+            }
+
+        return {
+            "status": "authenticated",
+            "cdp_reachable": True,
+            "browser": browser,
+            "url": url,
+            "title": title,
+        }
     
     @mcp.tool()
     def weekly_unprocessed_report(
@@ -149,7 +206,7 @@ if FastMCP is not None:
         end_date: Annotated[str | None, _F("end_date")] = None,
     ) -> dict[str, Any]:
         """Generate weekly unprocessed transactions report."""
-        cmd = ["python3", str(SCRIPTS_DIR / "baselane_weekly_unprocessed_report.py")]
+        cmd = [PYTHON_BIN, str(SCRIPTS_DIR / "baselane_weekly_unprocessed_report.py")]
         if start_date:
             cmd.extend(["--start", start_date])
         if end_date:
