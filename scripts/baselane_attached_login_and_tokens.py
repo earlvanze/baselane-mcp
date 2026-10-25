@@ -3,8 +3,8 @@ import os
 import subprocess
 from pathlib import Path
 
-ROOT = Path('/home/umbrel/.openclaw/workspace')
-LOGIN_WAIT = ROOT / 'scripts' / 'baselane_login_and_wait_via_cdp.js'
+ROOT = Path(__file__).resolve().parent
+LOGIN_WAIT = ROOT / 'baselane_login_and_wait_via_cdp.js'
 
 
 def main():
